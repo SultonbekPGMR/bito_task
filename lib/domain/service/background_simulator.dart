@@ -6,53 +6,74 @@ import 'package:unical_task/domain/service/seat_manager.dart';
 
 class BackgroundSimulator {
   final SeatManager _seatManager;
-  Timer? _schedulerTimer;
-  final List<Timer> _pendingConfirmTimers = [];
+  final List<Timer> _schedulerTimers = [];
+  final List<Timer> _pendingTimers = [];
   final Random _random = Random();
 
-  static const String botUserId = 'bot_user';
+  static const List<String> botUserIds = [
+    'bot_alice',
+    'bot_bob',
+    'bot_charlie',
+  ];
 
   BackgroundSimulator(this._seatManager);
 
   void start() {
-    _scheduleNext();
-  }
-
-  void _scheduleNext() {
-    final delay = Duration(seconds: 3 + _random.nextInt(3));
-    _schedulerTimer = Timer(delay, () {
-      _act();
-      _scheduleNext();
-    });
-  }
-
-  void _act() {
-    final availableSeats =
-        _seatManager.seats
-            .where((s) => s.status == SeatStatus.available)
-            .toList();
-
-    if (availableSeats.isEmpty) return;
-
-    final seat = availableSeats[_random.nextInt(availableSeats.length)];
-    final result = _seatManager.lockSeat(seat.id, botUserId);
-
-    if (result == SeatResult.success) {
-      if (_random.nextBool()) {
-        final confirmTimer = Timer(
-          Duration(seconds: 1 + _random.nextInt(3)),
-          () => _seatManager.confirmSeat(seat.id, botUserId),
-        );
-        _pendingConfirmTimers.add(confirmTimer);
-      }
+    for (final botId in botUserIds) {
+      _scheduleNext(botId);
     }
+  }
+
+  void _scheduleNext(String botId) {
+    // 1-3 second intervals — fast enough to collide with user
+    final delay = Duration(milliseconds: 800 + _random.nextInt(2200));
+    final timer = Timer(delay, () {
+      _act(botId);
+      _scheduleNext(botId);
+    });
+    _schedulerTimers.add(timer);
+  }
+
+  void _act(String botId) {
+    final seats = _seatManager.seats;
+
+    // 30% chance: try to grab a random seat (even if locked/reserved)
+    // This creates real contention — bot slams into user's locked seats
+    if (_random.nextDouble() < 0.3) {
+      final seat = seats[_random.nextInt(seats.length)];
+      _seatManager.lockSeat(seat.id, botId);
+      return;
+    }
+
+    // 70% chance: pick an available seat
+    final available =
+        seats.where((s) => s.status == SeatStatus.available).toList();
+    if (available.isEmpty) return;
+
+    final seat = available[_random.nextInt(available.length)];
+    final result = _seatManager.lockSeat(seat.id, botId);
+
+    if (result != SeatResult.success) return;
+
+    // 60% confirm quickly (0.5-2s), 40% let it expire
+    if (_random.nextDouble() < 0.6) {
+      final confirmTimer = Timer(
+        Duration(milliseconds: 500 + _random.nextInt(1500)),
+        () => _seatManager.confirmSeat(seat.id, botId),
+      );
+      _pendingTimers.add(confirmTimer);
+    }
+    // else: timeout — lock expires naturally after 10s
   }
 
   void stop() {
-    _schedulerTimer?.cancel();
-    for (final timer in _pendingConfirmTimers) {
+    for (final timer in _schedulerTimers) {
       timer.cancel();
     }
-    _pendingConfirmTimers.clear();
+    _schedulerTimers.clear();
+    for (final timer in _pendingTimers) {
+      timer.cancel();
+    }
+    _pendingTimers.clear();
   }
 }

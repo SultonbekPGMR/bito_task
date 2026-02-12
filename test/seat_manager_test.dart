@@ -319,32 +319,217 @@ void main() {
   });
 
   group('Race condition safety', () {
-    test('two users cannot lock the same seat', () {
-      final result1 = manager.lockSeat('S0', 'user1');
-      final result2 = manager.lockSeat('S0', 'user2');
+    test('10 users fight for the same seat — only 1 wins', () {
+      final results = <SeatResult>[];
+      for (int i = 0; i < 10; i++) {
+        results.add(manager.lockSeat('S0', 'user_$i'));
+      }
 
-      expect(result1, SeatResult.success);
-      expect(result2, SeatResult.lockedByOther);
+      // Exactly one success
+      expect(results.where((r) => r == SeatResult.success).length, 1);
+      // First caller wins
+      expect(results[0], SeatResult.success);
+      expect(manager.seats[0].lockedBy, 'user_0');
+      // All others rejected
+      for (int i = 1; i < 10; i++) {
+        expect(results[i], SeatResult.lockedByOther);
+      }
+    });
+
+    test('rapid-fire tap same seat 100 times — state never corrupts', () {
+      // Simulate user panic-tapping the same seat very fast
+      // Expected: lock → unlock → lock → unlock → ...
+      for (int i = 0; i < 100; i++) {
+        manager.handleSeatTap('S0', 'user1');
+      }
+      // 100 taps = even number → back to available (lock, unlock, lock, unlock...)
+      expect(manager.seats[0].status, SeatStatus.available);
+
+      // 101 taps = odd → locked
+      manager.handleSeatTap('S0', 'user1');
+      expect(manager.seats[0].status, SeatStatus.locked);
       expect(manager.seats[0].lockedBy, 'user1');
     });
 
-    test('handleSeatTap uses live state not stale snapshot', () {
-      // User1 locks S0
-      manager.lockSeat('S0', 'user1');
-      // User2 tries to tap S0 — should fail because S0 is locked
-      final result = manager.handleSeatTap('S0', 'user2');
-      expect(result, SeatResult.lockedByOther);
+    test('user confirms at exact moment lock expires — gets expired', () {
+      fakeAsync((async) {
+        final fakeStorage = FakeSeatLocalStorage();
+        final fakeManager = SeatManager(storage: fakeStorage);
+        fakeManager.init();
+
+        fakeManager.lockSeat('S0', 'user1');
+
+        // Advance to exactly 10s — timer fires, then confirm arrives
+        async.elapse(const Duration(seconds: 10));
+
+        // Timer already fired → seat is available
+        expect(fakeManager.seats[0].status, SeatStatus.available);
+
+        // User's confirm arrives "right after" — seat is no longer locked
+        final result = fakeManager.confirmSeat('S0', 'user1');
+        expect(result, SeatResult.notLocked);
+        expect(fakeManager.seats[0].status, SeatStatus.available);
+
+        fakeManager.dispose();
+      });
     });
 
-    test('concurrent lock and confirm on same seat', () {
-      manager.lockSeat('S0', 'user1');
-      // user1 confirms
-      final confirmResult = manager.confirmSeat('S0', 'user1');
-      // user2 tries to lock the now-reserved seat
-      final lockResult = manager.lockSeat('S0', 'user2');
+    test('bot locks seat → user taps same seat → user gets rejected', () {
+      // Bot grabs the seat
+      final botResult = manager.lockSeat('S0', 'bot_user');
+      expect(botResult, SeatResult.success);
 
-      expect(confirmResult, SeatResult.success);
-      expect(lockResult, SeatResult.alreadyReserved);
+      // User taps the same seat via handleSeatTap (like real UI would)
+      final userResult = manager.handleSeatTap('S0', 'current_user');
+      expect(userResult, SeatResult.lockedByOther);
+      // Seat still belongs to bot
+      expect(manager.seats[0].lockedBy, 'bot_user');
+    });
+
+    test('bot confirms seat → user tries to lock → gets alreadyReserved', () {
+      manager.lockSeat('S0', 'bot_user');
+      manager.confirmSeat('S0', 'bot_user');
+
+      final result = manager.handleSeatTap('S0', 'current_user');
+      expect(result, SeatResult.alreadyReserved);
+      expect(manager.seats[0].status, SeatStatus.reserved);
+    });
+
+    test('user batch confirms while bot locks one of user seats mid-loop', () {
+      // User locks S0, S1, S2
+      manager.lockSeat('S0', 'user1');
+      manager.lockSeat('S1', 'user1');
+      manager.lockSeat('S2', 'user1');
+
+      // Bot tries to lock S1 — fails because user1 holds it
+      final botResult = manager.lockSeat('S1', 'bot_user');
+      expect(botResult, SeatResult.lockedByOther);
+
+      // User batch confirms — all 3 should succeed
+      final result = manager.confirmAllUserSeats('user1');
+      expect(result.confirmed, 3);
+      expect(result.expired, 0);
+      expect(manager.seats[0].status, SeatStatus.reserved);
+      expect(manager.seats[1].status, SeatStatus.reserved);
+      expect(manager.seats[2].status, SeatStatus.reserved);
+    });
+
+    test('batch confirm with mix of expired and valid locks', () {
+      fakeAsync((async) {
+        final fakeStorage = FakeSeatLocalStorage();
+        final fakeManager = SeatManager(storage: fakeStorage);
+        fakeManager.init();
+
+        // Lock S0 at t=0
+        fakeManager.lockSeat('S0', 'user1');
+
+        // Wait 8 seconds, then lock S1 at t=8
+        async.elapse(const Duration(seconds: 8));
+        fakeManager.lockSeat('S1', 'user1');
+
+        // Wait 3 more seconds (t=11) — S0's timer fires (expired), S1 still has 5s
+        async.elapse(const Duration(seconds: 3));
+
+        // S0 already expired via timer
+        expect(fakeManager.seats[0].status, SeatStatus.available);
+        // S1 still locked
+        expect(fakeManager.seats[1].status, SeatStatus.locked);
+
+        // Batch confirm — only S1 should confirm
+        final result = fakeManager.confirmAllUserSeats('user1');
+        expect(result.confirmed, 1);
+        expect(result.expired, 0); // S0 already gone, not in locked state
+        expect(fakeManager.seats[1].status, SeatStatus.reserved);
+
+        fakeManager.dispose();
+      });
+    });
+
+    test('lock-expire-relock cycle — seat can be reused after expiry', () {
+      fakeAsync((async) {
+        final fakeStorage = FakeSeatLocalStorage();
+        final fakeManager = SeatManager(storage: fakeStorage);
+        fakeManager.init();
+
+        // User1 locks, lets it expire
+        fakeManager.lockSeat('S0', 'user1');
+        async.elapse(const Duration(seconds: 10));
+        expect(fakeManager.seats[0].status, SeatStatus.available);
+
+        // User2 grabs it immediately
+        final result = fakeManager.lockSeat('S0', 'user2');
+        expect(result, SeatResult.success);
+        expect(fakeManager.seats[0].lockedBy, 'user2');
+
+        // User2 confirms
+        fakeManager.confirmSeat('S0', 'user2');
+        expect(fakeManager.seats[0].status, SeatStatus.reserved);
+
+        // User1 tries again — too late
+        final lateResult = fakeManager.lockSeat('S0', 'user1');
+        expect(lateResult, SeatResult.alreadyReserved);
+
+        fakeManager.dispose();
+      });
+    });
+
+    test('20 users race for 5 seats — no double locks, no corruption', () {
+      final seatIds = ['S0', 'S1', 'S2', 'S3', 'S4'];
+      final userCount = 20;
+
+      // Each user tries to lock all 5 seats
+      for (int u = 0; u < userCount; u++) {
+        for (final seatId in seatIds) {
+          manager.lockSeat(seatId, 'user_$u');
+        }
+      }
+
+      // Each seat must be locked by exactly one user
+      for (final seatId in seatIds) {
+        final seat = manager.seats.firstWhere((s) => s.id == seatId);
+        expect(seat.status, SeatStatus.locked);
+        expect(seat.lockedBy, isNotNull);
+        // Winner is user_0 since they went first
+        expect(seat.lockedBy, 'user_0');
+      }
+    });
+
+    test('confirm-then-lock-then-confirm chain — reserved is permanent', () {
+      // User1 locks and confirms
+      manager.lockSeat('S0', 'user1');
+      manager.confirmSeat('S0', 'user1');
+      expect(manager.seats[0].status, SeatStatus.reserved);
+
+      // User2 tries lock → fail
+      expect(manager.lockSeat('S0', 'user2'), SeatResult.alreadyReserved);
+      // User2 tries handleSeatTap → fail
+      expect(manager.handleSeatTap('S0', 'user2'), SeatResult.alreadyReserved);
+      // User1 tries to re-lock own reserved → fail
+      expect(manager.lockSeat('S0', 'user1'), SeatResult.alreadyReserved);
+      // User1 tries handleSeatTap on reserved → fail
+      expect(manager.handleSeatTap('S0', 'user1'), SeatResult.alreadyReserved);
+
+      // Still reserved, no corruption
+      expect(manager.seats[0].status, SeatStatus.reserved);
+    });
+
+    test('all 64 seats locked by different users — no conflicts', () {
+      for (int i = 0; i < 64; i++) {
+        final result = manager.lockSeat('S$i', 'user_$i');
+        expect(result, SeatResult.success);
+      }
+
+      // All locked by different users
+      for (int i = 0; i < 64; i++) {
+        expect(manager.seats[i].status, SeatStatus.locked);
+        expect(manager.seats[i].lockedBy, 'user_$i');
+      }
+
+      // Cross-user lock attempts all fail
+      for (int i = 0; i < 64; i++) {
+        final result = manager.lockSeat('S$i', 'attacker');
+        expect(result, SeatResult.lockedByOther);
+      }
     });
   });
 }
