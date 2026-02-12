@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:unical_task/config/enum.dart';
@@ -72,7 +74,7 @@ class _HomeView extends StatelessWidget {
                   ),
                   child: Center(
                     child: Text(
-                      'SULTONBEK\'S TASK',
+                      "SULTONBEK'S TASK",
                       style: TextStyle(
                         fontWeight: FontWeight.bold,
                         color: Colors.grey.shade600,
@@ -115,14 +117,14 @@ class _HomeView extends StatelessWidget {
                           onTap: () {
                             context
                                 .read<HomeBloc>()
-                                .add(HomeEvent.onSeatTap(seat: seat));
+                                .add(HomeEvent.onSeatTap(seatId: seat.id));
                           },
                         );
                       },
                     ),
                   ),
                 ),
-                // Confirm button
+                _LogPanel(seatManager: context.read<SeatManager>()),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                   child: SizedBox(
@@ -185,7 +187,7 @@ class _HomeView extends StatelessWidget {
   }
 }
 
-class _SeatTile extends StatelessWidget {
+class _SeatTile extends StatefulWidget {
   final SeatModel seat;
   final String label;
   final VoidCallback onTap;
@@ -197,13 +199,76 @@ class _SeatTile extends StatelessWidget {
   });
 
   @override
+  State<_SeatTile> createState() => _SeatTileState();
+}
+
+class _SeatTileState extends State<_SeatTile> {
+  Timer? _countdownTimer;
+  int _remainingSeconds = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _updateCountdown();
+  }
+
+  @override
+  void didUpdateWidget(covariant _SeatTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.seat.status != widget.seat.status ||
+        oldWidget.seat.lockExpirationTime != widget.seat.lockExpirationTime) {
+      _updateCountdown();
+    }
+  }
+
+  void _updateCountdown() {
+    _countdownTimer?.cancel();
+    _countdownTimer = null;
+
+    if (widget.seat.status == SeatStatus.locked &&
+        widget.seat.lockExpirationTime != null) {
+      _calculateRemaining();
+      _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        _calculateRemaining();
+      });
+    } else {
+      if (mounted) setState(() => _remainingSeconds = 0);
+    }
+  }
+
+  void _calculateRemaining() {
+    final expiry = widget.seat.lockExpirationTime;
+    if (expiry == null) {
+      _countdownTimer?.cancel();
+      if (mounted) setState(() => _remainingSeconds = 0);
+      return;
+    }
+    final remaining = expiry.difference(DateTime.now()).inSeconds;
+    if (mounted) {
+      setState(() => _remainingSeconds = remaining.clamp(0, 999));
+    }
+    if (remaining <= 0) {
+      _countdownTimer?.cancel();
+    }
+  }
+
+  @override
+  void dispose() {
+    _countdownTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final isUserLocked =
-        seat.status == SeatStatus.locked &&
-        seat.lockedBy == HomeBloc.currentUserId;
+        widget.seat.status == SeatStatus.locked &&
+        widget.seat.lockedBy == HomeBloc.currentUserId;
+
+    final showCountdown =
+        widget.seat.status == SeatStatus.locked && _remainingSeconds > 0;
 
     return GestureDetector(
-      onTap: onTap,
+      onTap: widget.onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         decoration: BoxDecoration(
@@ -213,22 +278,34 @@ class _SeatTile extends StatelessWidget {
               ? Border.all(color: Colors.blue.shade900, width: 2)
               : null,
         ),
-        child: Center(
-          child: Text(
-            label,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 10,
-              fontWeight: FontWeight.w600,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(
+              widget.label,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+              ),
             ),
-          ),
+            if (showCountdown)
+              Text(
+                '${_remainingSeconds}s',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 8,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+          ],
         ),
       ),
     );
   }
 
   Color _getColor(bool isUserLocked) {
-    switch (seat.status) {
+    switch (widget.seat.status) {
       case SeatStatus.available:
         return Colors.green;
       case SeatStatus.locked:
@@ -236,5 +313,108 @@ class _SeatTile extends StatelessWidget {
       case SeatStatus.reserved:
         return Colors.red;
     }
+  }
+}
+
+class _LogPanel extends StatefulWidget {
+  final SeatManager seatManager;
+
+  const _LogPanel({required this.seatManager});
+
+  @override
+  State<_LogPanel> createState() => _LogPanelState();
+}
+
+class _LogPanelState extends State<_LogPanel> {
+  final List<String> _logs = [];
+  final ScrollController _scrollController = ScrollController();
+  StreamSubscription<String>? _logSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _logSubscription = widget.seatManager.logStream.listen((message) {
+      if (mounted) {
+        setState(() {
+          _logs.add(message);
+          if (_logs.length > 50) _logs.removeAt(0);
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_scrollController.hasClients) {
+            _scrollController.animateTo(
+              _scrollController.position.maxScrollExtent,
+              duration: const Duration(milliseconds: 150),
+              curve: Curves.easeOut,
+            );
+          }
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _logSubscription?.cancel();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 120,
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade900,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 6, 10, 2),
+            child: Text(
+              'Event Log',
+              style: TextStyle(
+                color: Colors.grey.shade400,
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+          const Divider(height: 1, color: Colors.grey),
+          Expanded(
+            child: _logs.isEmpty
+                ? Center(
+                    child: Text(
+                      'No events yet',
+                      style: TextStyle(
+                        color: Colors.grey.shade600,
+                        fontSize: 11,
+                      ),
+                    ),
+                  )
+                : ListView.builder(
+                    controller: _scrollController,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 4,
+                    ),
+                    itemCount: _logs.length,
+                    itemBuilder: (context, index) {
+                      return Text(
+                        _logs[index],
+                        style: const TextStyle(
+                          color: Colors.greenAccent,
+                          fontSize: 11,
+                          fontFamily: 'monospace',
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
   }
 }

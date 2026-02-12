@@ -32,51 +32,22 @@ class HomeBloc extends Bloc<HomeEvent, HomeState> {
   }
 
   void _onSeatTap(_OnSeatTap event, Emitter<HomeState> emit) {
-    final seat = event.seat;
-
-    if (seat.status == SeatStatus.locked && seat.lockedBy == currentUserId) {
-      _seatManager.unlockSeat(seat.id, currentUserId);
-      return;
-    }
-
-    final result = _seatManager.lockSeat(seat.id, currentUserId);
+    final result = _seatManager.handleSeatTap(event.seatId, currentUserId);
     if (result != SeatResult.success) {
       emit(state.copyWith(isError: true, errorMessage: result.message));
     }
   }
 
   void _onConfirmTap(_OnConfirmTap event, Emitter<HomeState> emit) {
-    final userLockedSeats =
-        state.seats
-            .where(
-              (s) =>
-                  s.status == SeatStatus.locked &&
-                  s.lockedBy == currentUserId,
-            )
-            .toList();
+    final (:confirmed, :expired) =
+        _seatManager.confirmAllUserSeats(currentUserId);
 
-    if (userLockedSeats.isEmpty) {
-      emit(
-        state.copyWith(
-          isError: true,
-          errorMessage: SeatResult.noLockedSeats.message,
-        ),
-      );
-      return;
-    }
-
-    int confirmed = 0;
-    int expired = 0;
-    for (final seat in userLockedSeats) {
-      final result = _seatManager.confirmSeat(seat.id, currentUserId);
-      if (result == SeatResult.success) {
-        confirmed++;
-      } else {
-        expired++;
-      }
-    }
-
-    if (expired > 0 && confirmed == 0) {
+    if (confirmed == 0 && expired == 0) {
+      emit(state.copyWith(
+        isError: true,
+        errorMessage: SeatResult.noLockedSeats.message,
+      ));
+    } else if (expired > 0 && confirmed == 0) {
       emit(state.copyWith(
         isError: true,
         errorMessage: 'All locks have expired',

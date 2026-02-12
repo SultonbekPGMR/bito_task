@@ -19,7 +19,6 @@ class BackgroundSimulator {
   }
 
   void _scheduleNext() {
-    // Random interval between 3-5 seconds
     final delay = Duration(seconds: 3 + _random.nextInt(3));
     _schedulerTimer = Timer(delay, () {
       _act();
@@ -39,8 +38,6 @@ class BackgroundSimulator {
     final result = _seatManager.lockSeat(seat.id, botUserId);
 
     if (result == SeatResult.success) {
-      // 50% chance: confirm after 1-3 seconds
-      // 50% chance: do nothing (let it expire via 10s timer)
       if (_random.nextBool()) {
         final confirmTimer = Timer(
           Duration(seconds: 1 + _random.nextInt(3)),
