@@ -1,0 +1,116 @@
+Mobile Developer Test Task
+Real-Time Seat Reservation System (Concurrency Simulation)
+1. Objective
+Real-time seat reservation logic'ni simulyatsiya giluvchi mobil ilova yarating.
+Asosiy magsad — concurrency, state management, timeout logic va race condition handling'ni tekshirish.
+Bu backend'li system emas. Barcha logika local'da simulyatsiya qilinadi.
+2. Scenario
+Tasavvur qiling, bu kinoteatr seat reservation ilovasi.
+Bir nechta foydalanuvchi bir vagtning o'zida seat tanlayapti.
+Sizning vazifangiz:
++ Seat locking mexanizmini yozish
+« Timeout logikasini boshqarish
+« Concurrency simulation gilish
+« State consistency saglash
+3. Seat Model
+Har seat quyidagi maydonlarga ega bo'lishi kerak:
+* id: String
+« status: AVAILABLE | LOCKED | RESERVED
++ lockedBy: userld yoki null
++ lockExpirationTime: timestamp yoki null
+Status turlari:
+AVAILABLE - tanlanmagan
+LOCKED ~ vagtincha band
+RESERVED - tasdiglangan, doimiy band
+4. Ul Requirements
+« 8x8grid (64 seat)
+« Har seat rang bilan ko'rsatiladi:
+o Yashil - AVAILABLE
+o Sariq - LOCKED
+o Qizil -~ RESERVED
+« Current user alohida userld bilan ishlaydi
+« Simulated background user mavjud bo'ladi
+5. Locking Logic
+User seat bosganda:
+1. Agar status = AVAILABLE:
+Mobile Developer Test Task
+« status = LOCKED
+« lockedBy = currentUser
++ lockExpirationTime = now + 10 seconds
+2. Agar status = LOCKED va lockedBy boshqa user:
+« Error ko'rsatish (“Seat already locked")
+3. Agar status = RESERVED:
+« Tanlash mumkin emas
+6. Lock Expiration
+Har LOCKED seat 10 soniya ichida tasdiglanmasa:
++ status — AVAILABLE
+« lockedBy — null
++ lockExpirationTime — null
+Expiration automatic ishlashi kerak.
+Timer har seat uchun individual yoki centralized bo'lishi mumkin.
+7. Reservation Logic
+User “Confirm” bosganda:
+« Faqgat lockedBy = currentUser bo'lsa
+« status — RESERVED
+« lockedBy — null
++ lockExpirationTime — null
+Agar confirm bosilganda lock allagachon expired bo'lsa:
+ Error ko'rsatish
+8. Concurrency Simulation
+App ichida background user simulyatsiyasi bo'lishi kerak.
+Har 3-5 soniyada:
+1. Random seat tanlanadi
+2. Agar AVAILABLE bo'lsa:
+« LOCKED gjilinadi
+3. 50% ehtimol bilan:
+« Confirm giladi
+4. 50% ehtimol bilan:
+« Timeout bo'ladi
+Background user alohida userld bilan ishlaydi.
+9. Critical Consistency Rules
+1. Bir seat hech gachon bir vaqtda 2 user tomonidan LOCKED bo'Imasligi kerak.
+2. RESERVED seat gayta LOCKED bo'Imasligi kerak.
+Mobile Developer Test Task
+3. LOCKED seat fagat o'z egasi tomonidan RESERVED gilinishi mumkin.
+4. Expired lock avtomatik tozalanishi kerak.
+10. Persistence Rules
++ RESERVED seat'lar local storage'da saglanadi.
++ LOCKED seat'lar saglanmaydi (ephemeral).
+« App gayta ochilganda:
+o AVAILABLE
+o RESERVED seat'lar tiklanadi
+Flutter: Hive / sqflite
+11. Edge Cases (Majburiy Hal Qilinishi Kerak)
+1. User tez-tez bir xil seatni bosishi
+2. Confirm bosilganda lock expiration tugagan bo'lishi
+3. Background user bilan race condition
+4. App minimizatsiya qilinishi
+5. Lock expiration ishlayotgan paytda confirm kelishi
+12. Architecture Requirements
+« Business logic Ul'dan ajratilgan bo'lishi kerak
+« Seat state centralized state manager orgali boshgariladi
+« Concurrency async / coroutine / stream orqali boshqariladi
+Android:
++ Kotlin + Coroutines
++ MVVM tavsiya etiladi
+Flutter: (Flutter bo'lsa plus)
+« Riverpod / Bloc / Provider
+13. Evaluation Criteria
+1. Concurrency thinking
+2. Atomic state update
+. Timeout handling
+. State machine aniqligi
+. Clean architecture
+. Edge case handling
+N o o aw
+. Code readability
+14. Bonus (Optional)
+« Seat lock countdown Ul'da ko'rsatilishi
+« Log panel (real-time event log)
+Mobile Developer Test Task
++ Unit test for seat state transitions
++ Seat state machine diagram README'da
+15. Deadline
+2 kun muddatda gitga yuklab repositoryni yuborishingizni so’raymiz va run bo’lgan apkni screen videoga olib
+tushuntirilgan holda yuborishngiz qo’shimchasiga apkni o’zini ham yuborishingiz talab gilinadi
+Mobile Developer Test Task

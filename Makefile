@@ -14,3 +14,6 @@ clean:
 
 bundle:
 	flutter build appbundle --release
+
+apk:
+	flutter build apk --release
