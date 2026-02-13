@@ -189,6 +189,44 @@ SeatManager reads _seats[index] — LIVE state at execution time
 Synchronous check + update = ATOMIC, no interleaving possible
 ```
 
+#### What if async was required?
+
+If this system had a real backend or async database, synchronous methods wouldn't be possible. The `await` would create a yield point where other code could interleave. But since Dart is single-threaded, a simple class-level `bool` flag is enough to guard the critical section:
+
+```dart
+class SeatManager {
+  bool _isBusy = false;  
+
+  Future<SeatResult> lockSeat(String seatId, String userId) async {
+    if (_isBusy) return SeatResult.busy;   
+    _isBusy = true;                       
+    try {
+      final seat = _seats[index];
+      if (seat.status != SeatStatus.available) return SeatResult.lockedByOther;
+
+      await _api.lockSeat(seatId, userId);  
+
+      _seats[index] = seat.copyWith(
+        status: SeatStatus.locked,
+        lockedBy: userId,
+      );
+      return SeatResult.success;
+    } finally {
+      _isBusy = false;                  
+    }
+  }
+}
+```
+
+Why this works in Dart but not in Java/Go:
+- Dart is **single-threaded** — `if (_isBusy)` check + `_isBusy = true` is synchronous, no thread can preempt between them
+- In multi-threaded languages, two threads could both read `_isBusy == false` simultaneously — that's why they need `Mutex`, `synchronized`, or atomic operations
+- In Dart, the only place control can switch is at `await` — and by that point the flag is already set
+
+A full `Mutex` with `Completer` queue is overkill for Dart. It's a pattern from multi-threaded languages. In Dart, a simple boolean guard achieves the same safety with less complexity.
+
+**We chose the synchronous approach** because all logic is local (no backend). This eliminates even the need for a boolean flag — simpler, faster, and impossible to break.
+
 #### Summary
 
 | Layer | Race condition vector | Prevention |
@@ -198,6 +236,7 @@ Synchronous check + update = ATOMIC, no interleaving possible
 | Batch confirm | Per-seat persist + emit in loop | `confirmAllUserSeats` — single pass, single persist, single emit |
 | UI → BLoC | Multiple rapid taps queued | `handleSeatTap` reads live state per call, not cached from event |
 | Background bots | 3 bots + user competing | Synchronous `lockSeat` — first caller wins, others rejected atomically |
+| Async fallback | `await` yield points in mutations | Mutex serializes access — one operation at a time |
 
 ## Running
 
